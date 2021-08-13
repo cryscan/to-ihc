@@ -1,3 +1,4 @@
 *.so
 control
 monoped
+.ipynb_checkpoints/

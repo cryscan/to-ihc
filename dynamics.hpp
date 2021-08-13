@@ -16,6 +16,7 @@ template <typename Scalar>
 struct CodeGenDynamics : public pinocchio::CodeGenBase<Scalar> {
   typedef pinocchio::FrameIndex FrameIndex;
   typedef pinocchio::CodeGenBase<Scalar> Base;
+
   typedef typename Base::Model Model;
   typedef typename Base::ADConfigVectorType ADConfigVectorType;
   typedef typename Base::ADTangentVectorType ADTangentVectorType;
@@ -58,30 +59,29 @@ struct CodeGenDynamics : public pinocchio::CodeGenBase<Scalar> {
     ad_u = ad_X.segment(it, nu);
     it += nu;
 
+#ifdef DYNAMICS_IMPL
     ADConfigVectorType qe(ad_model.nq);
     ADTangentVectorType ve(ad_model.nv);
-
-#ifdef DYNAMICS_IMPL
     step(qe, ve);
-#endif
 
     it = 0;
     ad_Y.segment(it, ad_model.nq) = qe;
     it += ad_model.nq;
     ad_Y.segment(it, ad_model.nv) = ve;
     it += ad_model.nv;
+#endif
 
     ad_fun.Dependent(ad_X, ad_Y);
     ad_fun.optimize("no_compare_op");
   }
 
   using Base::evalFunction;
-  template <typename StateVectorType, typename TangentVector>
-  void evalFunction(const Eigen::MatrixBase<StateVectorType> &x,
+  template <typename StateVector, typename TangentVector>
+  void evalFunction(const Eigen::MatrixBase<StateVector> &s,
                     const Eigen::MatrixBase<TangentVector> &u) {
     // fill x
     Eigen::DenseIndex it = 0;
-    x.segment(it, nx) = x;
+    x.segment(it, nx) = s;
     it += nx;
     x.segment(it, nu) = u;
     it += nu;
@@ -91,12 +91,12 @@ struct CodeGenDynamics : public pinocchio::CodeGenBase<Scalar> {
   }
 
   using Base::evalJacobian;
-  template <typename StateVectorType, typename TangentVector>
-  void evalJacobian(const Eigen::MatrixBase<StateVectorType> &x,
+  template <typename StateVector, typename TangentVector>
+  void evalJacobian(const Eigen::MatrixBase<StateVector> &s,
                     const Eigen::MatrixBase<TangentVector> &u) {
     // fill x
     Eigen::DenseIndex it = 0;
-    x.segment(it, nx) = x;
+    x.segment(it, nx) = s;
     it += nx;
     x.segment(it, nu) = u;
     it += nu;
@@ -178,11 +178,10 @@ void CodeGenDynamics<Scalar>::step(ADConfigVectorType &qe,
 
   // assemble contact jacobians
   pinocchio::computeJointJacobians(ad_model, ad_data, qm);
-  ADMatrixXs J(3 * num_ees, ad_model.nv);
-  J.setZero();
+  ADMatrixXs J = ADMatrixXs::Zero(3 * num_ees, ad_model.nv);
 
   for (size_t i = 0; i < num_ees; i++) {
-    ADMatrixXs j(6, ad_model.nv);
+    ADMatrixXs j = ADMatrixXs::Zero(6, ad_model.nv);
     pinocchio::getFrameJacobian(ad_model, ad_data, ee_idx[i],
                                 pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED,
                                 j);

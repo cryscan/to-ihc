@@ -1,3 +1,4 @@
+#include <fstream>
 #include <iostream>
 #include <vector>
 
@@ -27,22 +28,45 @@ int main() {
   dynamics_code_gen.initLib();
   dynamics_code_gen.loadLib();
 
-  CodeGenCost<double> cost_code_gen(model);
+  Eigen::Vector3d t;
+  t << 0.0, 0.0, 0.8;
+  pinocchio::SE3 target(Eigen::Quaterniond::Identity(), t);
+
+  CodeGenCost<double> cost_code_gen(model, 2, target);
   cost_code_gen.initLib();
   cost_code_gen.loadLib();
 
   auto q = pinocchio::neutral(model);
   // auto q = pinocchio::randomConfiguration(model);
   q.template segment<3>(0) << 0.0, 0.0, 1.0;
-  auto v = VectorXd(model.nv);
-  v.setZero();
-  auto u = VectorXd(dynamics_code_gen.nu);
-  u.setZero();
+  VectorXd v = VectorXd::Zero(model.nv);
+  v.template segment<3>(0) << 1.0, 0.0, 0.0;
+  VectorXd u = VectorXd::Zero(dynamics_code_gen.nu);
 
   VectorXd x(dynamics_code_gen.nx);
   x << q, v;
 
-  VectorXd t(dynamics_code_gen.nx);
-  t.setZero();
-  t.template segment<3>(0) << 0.0, 0.0, 0.8;
+  std::ofstream of("out.txt", std::ofstream::out | std::ofstream::trunc);
+
+  for (size_t i = 0; i < 100; i++) {
+    dynamics_code_gen.evalFunction(x, u);
+    dynamics_code_gen.evalJacobian(x, u);
+
+    cost_code_gen.evalFunction(x, u);
+    cost_code_gen.evalJacobian(x, u);
+    cost_code_gen.evalHessian(x, u);
+
+    std::cout << i << ": \n" << cost_code_gen.f << std::endl;
+    std::cout << cost_code_gen.df_dx.transpose() << '\n' << std::endl;
+    std::cout << cost_code_gen.d2f_dx2 << '\n' << std::endl;
+    std::cout << cost_code_gen.d2f_du2 << '\n' << std::endl;
+
+    std::cout << dynamics_code_gen.f.transpose() << '\n' << std::endl;
+    std::cout << dynamics_code_gen.df_dx << '\n' << std::endl;
+    std::cout << dynamics_code_gen.df_du << '\n' << std::endl;
+
+    of << dynamics_code_gen.f.transpose() << '\n';
+
+    x = dynamics_code_gen.f;
+  }
 }

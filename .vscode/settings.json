@@ -63,7 +63,9 @@
         "typeinfo": "cpp",
         "variant": "cpp",
         "bit": "cpp",
-        "transform": "cpp"
+        "transform": "cpp",
+        "forward_list": "cpp",
+        "valarray": "cpp"
     },
     "cSpell.words": [
         "eigen",
