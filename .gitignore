@@ -1,4 +1,4 @@
 *.so
+*.txt
 control
-monoped
 .ipynb_checkpoints/

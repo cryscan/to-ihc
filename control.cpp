@@ -56,9 +56,10 @@ int main() {
     cost_code_gen.evalJacobian(x, u);
     cost_code_gen.evalHessian(x, u);
 
-    std::cout << i << ": \n" << cost_code_gen.f << std::endl;
+    std::cout << i << ": " << cost_code_gen.f << '\n' << std::endl;
     std::cout << cost_code_gen.df_dx.transpose() << '\n' << std::endl;
     std::cout << cost_code_gen.d2f_dx2 << '\n' << std::endl;
+    std::cout << cost_code_gen.df_du.transpose() << '\n' << std::endl;
     std::cout << cost_code_gen.d2f_du2 << '\n' << std::endl;
 
     std::cout << dynamics_code_gen.f.transpose() << '\n' << std::endl;
