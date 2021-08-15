@@ -22,19 +22,21 @@ struct CodeGenCost : public pinocchio::CodeGenBase<Scalar> {
   typedef typename Base::ADVectorXs ADVectorXs;
 
   CodeGenCost(const Model &model, FrameIndex base_idx,
-              const pinocchio::SE3 &target,
+              const pinocchio::SE3 &target, Scalar alpha = 0.9,
               const std::string &function_name = "cost",
               const std::string &library_name = "cg_cost_eval")
-      : Base(model, model.nq + 2 * model.nv - 6, 1, function_name,
+      : Base(model, 2 * (model.nq + 2 * model.nv - 6), 1, function_name,
              library_name),
         nx(model.nq + model.nv), nu(model.nv - 6), base_idx(base_idx),
-        target(target.template cast<ADScalar>()) {
+        target(target.template cast<ADScalar>()), alpha(alpha) {
     ad_q = ADConfigVectorType(model.nq);
     ad_q = pinocchio::neutral(model);
     ad_v = ADTangentVectorType(model.nv);
     ad_v.setZero();
-    ad_u = ADTangentVectorType(nu);
-    ad_u.setZero();
+
+    ad_u = ADVectorXs::Zero(nu);
+    ad_ox = ADVectorXs::Zero(nx);
+    ad_ou = ADVectorXs::Zero(nu);
 
     hess = MatrixXs::Zero(ad_X.size(), ad_X.size());
 
@@ -59,6 +61,11 @@ struct CodeGenCost : public pinocchio::CodeGenBase<Scalar> {
     ad_u = ad_X.segment(it, nu);
     it += nu;
 
+    ad_ox = ad_X.segment(it, nx);
+    it += nx;
+    ad_ou = ad_X.segment(it, nu);
+    it += nu;
+
     cost();
     ad_Y(0) = ad_f;
 
@@ -72,14 +79,20 @@ struct CodeGenCost : public pinocchio::CodeGenBase<Scalar> {
   }
 
   using Base::evalFunction;
-  template <typename StateVector, typename TangentVector>
+  template <typename StateVector, typename ActionVector>
   void evalFunction(const Eigen::MatrixBase<StateVector> &s,
-                    const Eigen::MatrixBase<TangentVector> &u) {
+                    const Eigen::MatrixBase<ActionVector> &u,
+                    const Eigen::MatrixBase<StateVector> &os,
+                    const Eigen::MatrixBase<ActionVector> &ou) {
     // fill x
     Eigen::DenseIndex it = 0;
     x.segment(it, nx) = s;
     it += nx;
     x.segment(it, nu) = u;
+    it += nu;
+    x.segment(it, nx) = os;
+    it += nx;
+    x.segment(it, nu) = ou;
     it += nu;
 
     evalFunction(x);
@@ -88,14 +101,20 @@ struct CodeGenCost : public pinocchio::CodeGenBase<Scalar> {
   }
 
   using Base::evalJacobian;
-  template <typename StateVector, typename TangentVector>
+  template <typename StateVector, typename ActionVector>
   void evalJacobian(const Eigen::MatrixBase<StateVector> &s,
-                    const Eigen::MatrixBase<TangentVector> &u) {
+                    const Eigen::MatrixBase<ActionVector> &u,
+                    const Eigen::MatrixBase<StateVector> &os,
+                    const Eigen::MatrixBase<ActionVector> &ou) {
     // fill x
     Eigen::DenseIndex it = 0;
     x.segment(it, nx) = s;
     it += nx;
     x.segment(it, nu) = u;
+    it += nu;
+    x.segment(it, nx) = os;
+    it += nx;
+    x.segment(it, nu) = ou;
     it += nu;
 
     evalJacobian(x);
@@ -108,7 +127,7 @@ struct CodeGenCost : public pinocchio::CodeGenBase<Scalar> {
 
   template <typename Vector>
   void evalHessian(const Eigen::MatrixBase<Vector> &x,
-                   const Eigen::MatrixBase<Vector> &w, int) {
+                   const Eigen::MatrixBase<Vector> &w) {
     CppAD::cg::ArrayView<const Scalar> x_(
         PINOCCHIO_EIGEN_CONST_CAST(Vector, x).data(), (size_t)x.size());
     CppAD::cg::ArrayView<const Scalar> w_(
@@ -119,20 +138,26 @@ struct CodeGenCost : public pinocchio::CodeGenBase<Scalar> {
     Base::generatedFun_ptr->Hessian(x_, w_, hess_);
   }
 
-  template <typename StateVector, typename TangentVector>
+  template <typename StateVector, typename ActionVector>
   void evalHessian(const Eigen::MatrixBase<StateVector> &s,
-                   const Eigen::MatrixBase<TangentVector> &u) {
+                   const Eigen::MatrixBase<ActionVector> &u,
+                   const Eigen::MatrixBase<StateVector> &os,
+                   const Eigen::MatrixBase<ActionVector> &ou) {
     // fill x
     Eigen::DenseIndex it = 0;
     x.segment(it, nx) = s;
     it += nx;
     x.segment(it, nu) = u;
     it += nu;
+    x.segment(it, nx) = os;
+    it += nx;
+    x.segment(it, nu) = ou;
+    it += nu;
 
     VectorXs w(1);
     w << Scalar(1.0);
 
-    evalHessian(x, w, 0);
+    evalHessian(x, w);
     it = 0;
     d2f_dx2 = hess.block(it, it, nx, nx);
     it += nx;
@@ -147,6 +172,8 @@ struct CodeGenCost : public pinocchio::CodeGenBase<Scalar> {
   const int nx;
   const int nu;
 
+  const Scalar alpha;
+
 protected:
   using Base::ad_data;
   using Base::ad_fun;
@@ -159,7 +186,7 @@ protected:
   using Base::y;
 
   ADScalar ad_f;
-  ADTangentVectorType ad_u;
+  ADVectorXs ad_u, ad_ox, ad_ou;
 
   MatrixXs hess;
 
@@ -175,21 +202,21 @@ protected:
 template <typename Scalar> void CodeGenCost<Scalar>::cost() {
   pinocchio::framesForwardKinematics(ad_model, ad_data, ad_q);
 
-  ad_f = ADScalar(0);
-
   auto base_trans = ad_data.oMf[base_idx].translation();
-  Eigen::Quaternion<ADScalar> base_rot(ad_data.oMf[base_idx].rotation());
-
   auto target_trans = target.translation();
-  Eigen::Quaternion<ADScalar> target_rot(target.rotation());
+  ADScalar ad_g = (base_trans - target_trans).squaredNorm();
 
-  auto lin_delta = base_trans - target_trans;
-  ad_f += (lin_delta.transpose() * lin_delta).sum();
+  // ADScalar ang_dist = base_rot.angularDistance(target_rot);
+  // ad_g += ang_dist * ang_dist;
 
-  ADScalar ang_dist = base_rot.angularDistance(target_rot);
-  ad_f += ang_dist * ang_dist;
+  ad_g += ad_u.squaredNorm();
 
-  ad_f += (ad_u.transpose() * ad_u).sum();
+  ADVectorXs ad_x(nx);
+  ad_x << ad_q, ad_v;
+
+  ADScalar ad_h = (ad_x - ad_ox).squaredNorm() + (ad_u - ad_ou).squaredNorm();
+
+  ad_f = (1 - alpha) * ad_g + alpha * ad_h;
 }
 
 #endif

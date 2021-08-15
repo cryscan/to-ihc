@@ -27,19 +27,19 @@ struct CodeGenDynamics : public pinocchio::CodeGenBase<Scalar> {
   typedef typename Base::ADVectorXs ADVectorXs;
 
   CodeGenDynamics(const Model &model, Scalar dt, int num_iters, Scalar mu,
-                  const std::vector<FrameIndex> &ee_idx,
+                  Scalar tau_limit, const std::vector<FrameIndex> &ee_idx,
                   const std::string &function_name = "dynamics",
                   const std::string &library_name = "cg_dynamics_eval")
       : Base(model, model.nq + 2 * model.nv - 6, model.nq + model.nv,
              function_name, library_name),
         nx(model.nq + model.nv), nu(model.nv - 6), dt(dt), num_iters(num_iters),
-        mu(mu), num_ees(ee_idx.size()), ee_idx(ee_idx) {
+        mu(mu), tau_limit(tau_limit), num_ees(ee_idx.size()), ee_idx(ee_idx) {
     ad_q = ADConfigVectorType(model.nq);
     ad_q = pinocchio::neutral(model);
     ad_v = ADTangentVectorType(model.nv);
     ad_v.setZero();
-    ad_u = ADTangentVectorType(nu);
-    ad_u.setZero();
+
+    ad_u = ADVectorXs::Zero(nu);
 
     x = VectorXs::Zero(Base::getInputDimension());
     res = VectorXs::Zero(Base::getOutputDimension());
@@ -76,9 +76,9 @@ struct CodeGenDynamics : public pinocchio::CodeGenBase<Scalar> {
   }
 
   using Base::evalFunction;
-  template <typename StateVector, typename TangentVector>
+  template <typename StateVector, typename ActionVector>
   void evalFunction(const Eigen::MatrixBase<StateVector> &s,
-                    const Eigen::MatrixBase<TangentVector> &u) {
+                    const Eigen::MatrixBase<ActionVector> &u) {
     // fill x
     Eigen::DenseIndex it = 0;
     x.segment(it, nx) = s;
@@ -91,9 +91,9 @@ struct CodeGenDynamics : public pinocchio::CodeGenBase<Scalar> {
   }
 
   using Base::evalJacobian;
-  template <typename StateVector, typename TangentVector>
+  template <typename StateVector, typename ActionVector>
   void evalJacobian(const Eigen::MatrixBase<StateVector> &s,
-                    const Eigen::MatrixBase<TangentVector> &u) {
+                    const Eigen::MatrixBase<ActionVector> &u) {
     // fill x
     Eigen::DenseIndex it = 0;
     x.segment(it, nx) = s;
@@ -129,7 +129,7 @@ protected:
   using Base::jac;
   using Base::y;
 
-  ADTangentVectorType ad_u;
+  ADVectorXs ad_u;
 
   VectorXs x;
   VectorXs res;
@@ -137,6 +137,7 @@ protected:
   const Scalar dt;
   const size_t num_iters;
   const Scalar mu;
+  const ADScalar tau_limit;
 
   inline ADVectorXs prox(const ADVectorXs &p);
   inline void step(ADConfigVectorType &qe, ADTangentVectorType &ve);
@@ -169,6 +170,8 @@ void CodeGenDynamics<Scalar>::step(ADConfigVectorType &qe,
   ADTangentVectorType tau(ad_model.nv);
   tau.setZero();
   tau.segment(6, nu) = ad_u;
+  tau = tau.unaryExpr(
+      [&](auto x) { return CppAD::max(-tau_limit, CppAD::min(tau_limit, x)); });
 
   pinocchio::nonLinearEffects(ad_model, ad_data, qm, ad_v);
   auto h = tau - ad_data.nle;
@@ -218,7 +221,7 @@ void CodeGenDynamics<Scalar>::step(ADConfigVectorType &qe,
       auto G_ij = G.template block<3, 3>(3 * i, 3 * j);
       r(i) += G_ij.determinant();
     }
-    r(i) = Scalar(1) / CppAD::max(r(i), ADScalar(0.001));
+    r(i) = Scalar(1) / CppAD::max(r(i), one);
   }
 
   for (size_t k = 0; k < num_iters; k++) {
@@ -240,6 +243,7 @@ void CodeGenDynamics<Scalar>::step(ADConfigVectorType &qe,
   ve = ad_v + m_inv_h * dt + m_inv_Jt * p;
   qe = pinocchio::integrate(ad_model, ad_q, (ad_v + ve) * (dt / 2));
 
+#if 0
   // correction by IK
   for (size_t i = 0; i < num_ees; i++) {
     pinocchio::framesForwardKinematics(ad_model, ad_data, qe);
@@ -258,6 +262,7 @@ void CodeGenDynamics<Scalar>::step(ADConfigVectorType &qe,
     ADVectorXs v = J.colPivHouseholderQr().solve(d);
     pinocchio::integrate(ad_model, qe, b(i) * v, qe);
   }
+#endif
 }
 
 #endif
